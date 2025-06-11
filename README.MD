@@ -2,7 +2,7 @@
 
 iya gitu
 
-# saya deploynya di lokal server saya sih gini
+# saya deploynya di lokal server sih, dan gini kurang lebih
 
 ## copy dulu pake scp dari macbook gue ke komputer server lokal gue
 ```sh
