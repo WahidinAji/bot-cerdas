@@ -1,0 +1,6 @@
+.DS_Store
+*.sh
+*.go.*
+*.json
+*.json.*
+GUIDE.MD
