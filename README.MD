@@ -30,8 +30,8 @@ export DISCORD_BOT_TOKEN=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 
 kalau gatau apa itu environment, kerja keras lagi ya.
 
-# kenapa bot ini ada
+# kenapa bot ini ada?
 berawal dari perbincangan saya dan kawan-kawan saya di discord. Kami sering membalas opini bodoh dengan cerdas, akan tetapi salah satu dari kami bilang `capek juga ngetik cerdas terus`. Nah, maka dari itu saya membuat bot ini.
 
-# kenapa saya ngerti cerdas
+# kenapa saya ngerti cerdas?
 saya ngerti cerdas karena saya punya cerdas, dan saya punya cerdas. Kalau saya punya cerdas, saya punya cerdas.
