@@ -333,9 +333,9 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	// Check for matching triggers
+	// Check for matching triggers - exact match required
 	for _, reply := range autoReplies {
-		if strings.Contains(messageContent, reply.Trigger) {
+		if messageContent == reply.Trigger {
 			// Send reply immediately with message reference to show "replying to" context
 			_, err := s.ChannelMessageSendReply(m.ChannelID, reply.Response, &discordgo.MessageReference{
 				MessageID: m.ID,
