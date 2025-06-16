@@ -32,6 +32,19 @@ var (
 	session     *discordgo.Session
 )
 
+// containsWholeWord checks if the trigger exists as a whole word in the message
+func containsWholeWord(message, trigger string) bool {
+	words := strings.Fields(message)
+	for _, word := range words {
+		// Remove common punctuation from the word
+		cleanWord := strings.Trim(word, ".,!?;:\"'()[]{}*")
+		if cleanWord == trigger {
+			return true
+		}
+	}
+	return false
+}
+
 // loadAutoReplies loads auto-reply rules from JSON file
 func loadAutoReplies() {
 	autoReplies = make(AutoReplies, 0)
@@ -333,9 +346,9 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	// Check for matching triggers - exact match required
+	// Check for matching triggers - search for whole word matches only
 	for _, reply := range autoReplies {
-		if messageContent == reply.Trigger {
+		if containsWholeWord(messageContent, reply.Trigger) {
 			// Send reply immediately with message reference to show "replying to" context
 			_, err := s.ChannelMessageSendReply(m.ChannelID, reply.Response, &discordgo.MessageReference{
 				MessageID: m.ID,
