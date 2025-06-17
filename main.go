@@ -2,12 +2,16 @@ package main
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -17,6 +21,25 @@ type AutoReply struct {
 	Trigger  string `json:"trigger"`
 	Response string `json:"response"`
 	AuthorID string `json:"author_id,omitempty"`
+}
+
+// RSS feed structures
+type RSS struct {
+	XMLName xml.Name `xml:"rss"`
+	Channel Channel  `xml:"channel"`
+}
+
+type Channel struct {
+	Title       string `xml:"title"`
+	Description string `xml:"description"`
+	Items       []Item `xml:"item"`
+}
+
+type Item struct {
+	Title       string `xml:"title"`
+	Link        string `xml:"link"`
+	Description string `xml:"description"`
+	PubDate     string `xml:"pubDate"`
 }
 
 // ServerAutoReplies stores auto-reply rules per server
@@ -43,6 +66,51 @@ func containsWholeWord(message, trigger string) bool {
 		}
 	}
 	return false
+}
+
+// RSS topic mapping based on Investing.com RSS structure
+var rssTopics = map[string]string{
+	"ringkasan pasar":      "https://id.investing.com/rss/news_25.rss",
+	"analisis teknikal":    "https://id.investing.com/rss/news_25.rss",
+	"analisis fundamental": "https://id.investing.com/rss/news_25.rss",
+	"opini":                "https://id.investing.com/rss/news_25.rss",
+	"ide investasi":        "https://id.investing.com/rss/news_25.rss",
+	"mata uang kripto":     "https://id.investing.com/rss/news_301.rss",
+	"forex":                "https://id.investing.com/rss/news_1.rss",
+	"saham":                "https://id.investing.com/rss/news_25.rss",
+	"komoditas":            "https://id.investing.com/rss/news_49.rss",
+	"berita":               "https://id.investing.com/rss/news.rss",
+	"breaking news":        "https://id.investing.com/rss/news.rss",
+}
+
+// fetchRSSFeed fetches and parses RSS feed from the given URL
+func fetchRSSFeed(url string) (*RSS, error) {
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch RSS feed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP error: %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %v", err)
+	}
+
+	var rss RSS
+	err = xml.Unmarshal(body, &rss)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse XML: %v", err)
+	}
+
+	return &rss, nil
 }
 
 // loadAutoReplies loads auto-reply rules from JSON file
@@ -371,6 +439,160 @@ func handleHelpCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	})
 }
 
+// handleCommandsCommand handles the /commands slash command
+func handleCommandsCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	embed := &discordgo.MessageEmbed{
+		Title:       "🎛️ Bot Commands",
+		Description: "All available commands for this bot",
+		Color:       0x3498db,
+		Fields: []*discordgo.MessageEmbedField{
+			{
+				Name:   "🤖 **Auto-Reply Commands**",
+				Value:  "`/reply` - Set up auto-reply rules\n`/list_replies` - Show server's auto-reply rules\n`/help_reply` - Help for auto-reply system",
+				Inline: false,
+			},
+			{
+				Name:   "📰 **News & Analysis Commands**",
+				Value:  "`/analisis` - Get latest financial news from Investing.com",
+				Inline: false,
+			},
+			{
+				Name:   "ℹ️ **Information Commands**",
+				Value:  "`/commands` - Show this list of all commands",
+				Inline: false,
+			},
+			{
+				Name:   "📖 **Quick Usage Examples:**",
+				Value:  "• `/reply kerja working hard!` - Create auto-reply\n• `/analisis ringkasan pasar` - Get market news\n• `/list_replies` - See all server replies\n• `/help_reply` - Detailed auto-reply help",
+				Inline: false,
+			},
+		},
+		Footer: &discordgo.MessageEmbedFooter{
+			Text: "💡 Tip: Use /help_reply for detailed auto-reply instructions",
+		},
+		Timestamp: time.Now().Format(time.RFC3339),
+	}
+
+	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Embeds: []*discordgo.MessageEmbed{embed},
+			Flags:  discordgo.MessageFlagsEphemeral,
+		},
+	})
+}
+
+// handleAnalisisCommand handles the /analisis slash command for RSS feeds
+func handleAnalisisCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	options := i.ApplicationCommandData().Options
+
+	if len(options) == 0 {
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "❌ Please provide a topic! Example: `/analisis ringkasan pasar`",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
+
+	topic := strings.ToLower(options[0].StringValue())
+
+	// Find matching RSS URL
+	var rssURL string
+	var foundTopic string
+	for key, url := range rssTopics {
+		if strings.Contains(topic, key) || key == topic {
+			rssURL = url
+			foundTopic = key
+			break
+		}
+	}
+
+	if rssURL == "" {
+		// Show available topics
+		availableTopics := make([]string, 0, len(rssTopics))
+		for topic := range rssTopics {
+			availableTopics = append(availableTopics, topic)
+		}
+
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: fmt.Sprintf("❌ Topic not found! Available topics:\n• %s", strings.Join(availableTopics, "\n• ")),
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
+
+	// Defer the response since fetching RSS might take time
+	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+	})
+
+	// Fetch RSS feed
+	rss, err := fetchRSSFeed(rssURL)
+	if err != nil {
+		s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+			Content: fmt.Sprintf("❌ Failed to fetch RSS feed: %v", err),
+			Flags:   discordgo.MessageFlagsEphemeral,
+		})
+		return
+	}
+
+	if len(rss.Channel.Items) == 0 {
+		s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+			Content: "📰 No news articles found for this topic.",
+			Flags:   discordgo.MessageFlagsEphemeral,
+		})
+		return
+	}
+
+	// Create embed with latest news (limit to 5 articles)
+	embed := &discordgo.MessageEmbed{
+		Title:       fmt.Sprintf("📰 %s - %s", strings.ToUpper(string(foundTopic[0]))+foundTopic[1:], rss.Channel.Title),
+		Description: "Latest news from Investing.com",
+		Color:       0x1f8b4c,
+		Footer: &discordgo.MessageEmbedFooter{
+			Text: "Source: Investing.com",
+		},
+		Timestamp: time.Now().Format(time.RFC3339),
+	}
+
+	maxItems := 5
+	if len(rss.Channel.Items) < maxItems {
+		maxItems = len(rss.Channel.Items)
+	}
+
+	for i := 0; i < maxItems; i++ {
+		item := rss.Channel.Items[i]
+
+		// Clean up description (remove HTML tags and limit length)
+		description := strings.ReplaceAll(item.Description, "<![CDATA[", "")
+		description = strings.ReplaceAll(description, "]]>", "")
+		description = strings.ReplaceAll(description, "<p>", "")
+		description = strings.ReplaceAll(description, "</p>", "")
+		description = strings.ReplaceAll(description, "<br>", "\n")
+		description = strings.ReplaceAll(description, "<br/>", "\n")
+
+		if len(description) > 200 {
+			description = description[:200] + "..."
+		}
+
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+			Name:   item.Title,
+			Value:  fmt.Sprintf("%s\n\n[Read More](%s)", description, item.Link),
+			Inline: false,
+		})
+	}
+
+	s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+		Embeds: []*discordgo.MessageEmbed{embed},
+	})
+}
+
 // messageCreate handles incoming messages for auto-replies
 func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	// Ignore bot messages
@@ -432,6 +654,10 @@ func interactionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		handleListRepliesCommand(s, i)
 	case "help_reply":
 		handleHelpCommand(s, i)
+	case "analisis":
+		handleAnalisisCommand(s, i)
+	case "commands":
+		handleCommandsCommand(s, i)
 	}
 }
 
@@ -483,6 +709,35 @@ func ready(s *discordgo.Session, event *discordgo.Ready) {
 		{
 			Name:        "help_reply",
 			Description: "Show help information for the auto-reply bot",
+		},
+		{
+			Name:        "analisis",
+			Description: "Fetch latest news and analysis from Investing.com",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "topic",
+					Description: "Topic to get news for",
+					Required:    true,
+					Choices: []*discordgo.ApplicationCommandOptionChoice{
+						{Name: "Ringkasan Pasar", Value: "ringkasan pasar"},
+						{Name: "Analisis Teknikal", Value: "analisis teknikal"},
+						{Name: "Analisis Fundamental", Value: "analisis fundamental"},
+						{Name: "Opini", Value: "opini"},
+						{Name: "Ide Investasi", Value: "ide investasi"},
+						{Name: "Mata Uang Kripto", Value: "mata uang kripto"},
+						{Name: "Forex", Value: "forex"},
+						{Name: "Saham", Value: "saham"},
+						{Name: "Komoditas", Value: "komoditas"},
+						{Name: "Berita", Value: "berita"},
+						{Name: "Breaking News", Value: "breaking news"},
+					},
+				},
+			},
+		},
+		{
+			Name:        "commands",
+			Description: "Show all available bot commands",
 		},
 	}
 
