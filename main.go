@@ -453,7 +453,7 @@ func handleCommandsCommand(s *discordgo.Session, i *discordgo.InteractionCreate)
 			},
 			{
 				Name:   "📰 **News & Analysis Commands**",
-				Value:  "`/analisis` - Get latest financial news from Investing.com",
+				Value:  "`/analisis` - Get latest financial news (restricted to specific server/channel)\n`/trendingx` - Get top 5 trending topics with links and previews",
 				Inline: false,
 			},
 			{
@@ -463,7 +463,7 @@ func handleCommandsCommand(s *discordgo.Session, i *discordgo.InteractionCreate)
 			},
 			{
 				Name:   "📖 **Quick Usage Examples:**",
-				Value:  "• `/reply kerja working hard!` - Create auto-reply\n• `/analisis ringkasan pasar` - Get market news\n• `/list_replies` - See all server replies\n• `/help_reply` - Detailed auto-reply help",
+				Value:  "• `/reply kerja working hard!` - Create auto-reply\n• `/analisis ringkasan pasar` - Get market news (if authorized)\n• `/trendingx` - See top 5 trending topics with clickable links\n• `/list_replies` - See all server replies\n• `/help_reply` - Detailed auto-reply help",
 				Inline: false,
 			},
 		},
@@ -484,6 +484,34 @@ func handleCommandsCommand(s *discordgo.Session, i *discordgo.InteractionCreate)
 
 // handleAnalisisCommand handles the /analisis slash command for RSS feeds
 func handleAnalisisCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	// Hardcoded server and channel restriction
+	allowedServerID := "910866740567748628"
+	allowedChannelID := "910881680867348530"
+
+	// Check if command is used in the allowed server
+	if i.GuildID != allowedServerID {
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "❌ The `/analisis` command is only available in specific servers. This command is restricted to authorized servers only.",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
+
+	// Check if command is used in the allowed channel
+	if i.ChannelID != allowedChannelID {
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "❌ The `/analisis` command can only be used in the designated channel. Please use it in the correct channel.",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
+
 	options := i.ApplicationCommandData().Options
 
 	if len(options) == 0 {

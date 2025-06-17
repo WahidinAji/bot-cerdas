@@ -35,3 +35,5 @@ berawal dari perbincangan saya dan kawan-kawan saya di discord. Kami sering memb
 
 # kenapa saya ngerti cerdas?
 saya ngerti cerdas karena saya punya cerdas, dan saya punya cerdas. Kalau saya punya cerdas, saya punya cerdas.
+
+https://discord.com/channels/<guild_id_or_server>/<channel_id>
