@@ -19,8 +19,8 @@ type AutoReply struct {
 	AuthorID string `json:"author_id,omitempty"`
 }
 
-// AutoReplies stores all auto-reply rules globally (no longer per-channel)
-type AutoReplies []AutoReply
+// ServerAutoReplies stores auto-reply rules per server
+type ServerAutoReplies map[string][]AutoReply // map[guildID][]AutoReply
 
 const (
 	dataFile   = "auto_replies.json"
@@ -28,8 +28,8 @@ const (
 )
 
 var (
-	autoReplies AutoReplies
-	session     *discordgo.Session
+	serverAutoReplies ServerAutoReplies
+	session           *discordgo.Session
 )
 
 // containsWholeWord checks if the trigger exists as a whole word in the message
@@ -47,7 +47,7 @@ func containsWholeWord(message, trigger string) bool {
 
 // loadAutoReplies loads auto-reply rules from JSON file
 func loadAutoReplies() {
-	autoReplies = make(AutoReplies, 0)
+	serverAutoReplies = make(ServerAutoReplies)
 
 	if _, err := os.Stat(dataFile); os.IsNotExist(err) {
 		return
@@ -59,17 +59,21 @@ func loadAutoReplies() {
 		return
 	}
 
-	if err := json.Unmarshal(data, &autoReplies); err != nil {
+	if err := json.Unmarshal(data, &serverAutoReplies); err != nil {
 		log.Printf("Error parsing auto-replies file: %v", err)
 		return
 	}
 
-	log.Printf("Loaded %d global auto-reply rules", len(autoReplies))
+	totalRules := 0
+	for _, replies := range serverAutoReplies {
+		totalRules += len(replies)
+	}
+	log.Printf("Loaded %d auto-reply rules across %d servers", totalRules, len(serverAutoReplies))
 }
 
 // saveAutoReplies saves auto-reply rules to JSON file
 func saveAutoReplies() {
-	data, err := json.MarshalIndent(autoReplies, "", "  ")
+	data, err := json.MarshalIndent(serverAutoReplies, "", "  ")
 	if err != nil {
 		log.Printf("Error marshaling auto-replies: %v", err)
 		return
@@ -81,25 +85,30 @@ func saveAutoReplies() {
 	}
 }
 
-// addAutoReply adds a new auto-reply rule
-func addAutoReply(trigger, response, authorID string) (bool, string, string) {
-	// Check if trigger already exists globally
-	for i, reply := range autoReplies {
+// addAutoReply adds a new auto-reply rule for a specific server
+func addAutoReply(trigger, response, authorID, guildID string) (bool, string, string) {
+	// Initialize server replies if not exists
+	if serverAutoReplies[guildID] == nil {
+		serverAutoReplies[guildID] = make([]AutoReply, 0)
+	}
+
+	// Check if trigger already exists in this server
+	for i, reply := range serverAutoReplies[guildID] {
 		if strings.EqualFold(reply.Trigger, trigger) {
 			// Check if the current user is the author
 			if reply.AuthorID != "" && reply.AuthorID != authorID {
 				return false, fmt.Sprintf("you can't change this you bartard <@%s>", authorID), ""
 			}
 			// Update existing reply
-			autoReplies[i].Response = response
-			autoReplies[i].AuthorID = authorID
+			serverAutoReplies[guildID][i].Response = response
+			serverAutoReplies[guildID][i].AuthorID = authorID
 			saveAutoReplies()
 			return true, "Auto-reply updated successfully!", ""
 		}
 	}
 
 	// Add new auto-reply
-	autoReplies = append(autoReplies, AutoReply{
+	serverAutoReplies[guildID] = append(serverAutoReplies[guildID], AutoReply{
 		Trigger:  strings.ToLower(trigger),
 		Response: response,
 		AuthorID: authorID,
@@ -108,9 +117,13 @@ func addAutoReply(trigger, response, authorID string) (bool, string, string) {
 	return true, "Auto-reply created successfully!", ""
 }
 
-// removeAutoReply removes an auto-reply rule
-func removeAutoReply(trigger, authorID string) (bool, string, string) {
-	for i, reply := range autoReplies {
+// removeAutoReply removes an auto-reply rule from a specific server
+func removeAutoReply(trigger, authorID, guildID string) (bool, string, string) {
+	if serverAutoReplies[guildID] == nil {
+		return false, "No auto-reply found for that trigger.", ""
+	}
+
+	for i, reply := range serverAutoReplies[guildID] {
 		if strings.EqualFold(reply.Trigger, trigger) {
 			// Check if the current user is the author
 			if reply.AuthorID != "" && reply.AuthorID != authorID {
@@ -118,7 +131,13 @@ func removeAutoReply(trigger, authorID string) (bool, string, string) {
 			}
 
 			// Remove the element
-			autoReplies = append(autoReplies[:i], autoReplies[i+1:]...)
+			serverAutoReplies[guildID] = append(serverAutoReplies[guildID][:i], serverAutoReplies[guildID][i+1:]...)
+
+			// Clean up empty server entries
+			if len(serverAutoReplies[guildID]) == 0 {
+				delete(serverAutoReplies, guildID)
+			}
+
 			saveAutoReplies()
 			return true, "Auto-reply removed successfully!", ""
 		}
@@ -129,6 +148,19 @@ func removeAutoReply(trigger, authorID string) (bool, string, string) {
 // handleReplyCommand handles the /reply slash command
 func handleReplyCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	options := i.ApplicationCommandData().Options
+
+	// Get guild ID - only work in servers, not DMs
+	guildID := i.GuildID
+	if guildID == "" {
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "❌ Auto-reply commands only work in servers, not in DMs!",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
 
 	// Get user ID - handle both guild and DM interactions
 	var userID string
@@ -151,7 +183,7 @@ func handleReplyCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 
 	if strings.ToLower(mode) == "remove" {
-		success, message, _ := removeAutoReply(trigger, userID)
+		success, message, _ := removeAutoReply(trigger, userID, guildID)
 		var responseType string
 		var flags discordgo.MessageFlags = discordgo.MessageFlagsEphemeral
 
@@ -188,7 +220,7 @@ func handleReplyCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		return
 	}
 
-	success, message, _ := addAutoReply(trigger, response, userID)
+	success, message, _ := addAutoReply(trigger, response, userID, guildID)
 
 	if !success {
 		var flags discordgo.MessageFlags = discordgo.MessageFlagsEphemeral
@@ -230,11 +262,26 @@ func handleReplyCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 // handleListRepliesCommand handles the /list_replies slash command
 func handleListRepliesCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if len(autoReplies) == 0 {
+	// Get guild ID - only work in servers, not DMs
+	guildID := i.GuildID
+	if guildID == "" {
 		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
-				Content: "📝 No auto-reply rules set up globally.",
+				Content: "❌ Auto-reply commands only work in servers, not in DMs!",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
+
+	// Check if this server has any auto-replies
+	serverReplies := serverAutoReplies[guildID]
+	if len(serverReplies) == 0 {
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "📝 No auto-reply rules set up for this server.",
 				Flags:   discordgo.MessageFlagsEphemeral,
 			},
 		})
@@ -242,15 +289,15 @@ func handleListRepliesCommand(s *discordgo.Session, i *discordgo.InteractionCrea
 	}
 
 	embed := &discordgo.MessageEmbed{
-		Title:       "📋 Global Auto-Reply Rules",
-		Description: "Active rules for all channels",
+		Title:       "📋 Server Auto-Reply Rules",
+		Description: "Active rules for this server",
 		Color:       0x3498db,
 		Footer: &discordgo.MessageEmbedFooter{
-			Text: fmt.Sprintf("Total rules: %d", len(autoReplies)),
+			Text: fmt.Sprintf("Total rules: %d", len(serverReplies)),
 		},
 	}
 
-	for _, reply := range autoReplies {
+	for _, reply := range serverReplies {
 		displayResponse := reply.Response
 		if len(displayResponse) > 100 {
 			displayResponse = displayResponse[:100] + "..."
@@ -281,37 +328,37 @@ func handleListRepliesCommand(s *discordgo.Session, i *discordgo.InteractionCrea
 func handleHelpCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	embed := &discordgo.MessageEmbed{
 		Title:       "🤖 Auto-Reply Bot Help",
-		Description: "Smart auto-reply system for Discord channels",
+		Description: "Smart auto-reply system for Discord servers",
 		Color:       0x9b59b6,
 		Fields: []*discordgo.MessageEmbedField{
 			{
 				Name:   "📝 `/reply [trigger] [response]`",
-				Value:  "Set up a new auto-reply rule. When someone sends a message containing the trigger text, the bot will automatically respond.",
+				Value:  "Set up a new auto-reply rule for this server. When someone sends a message containing the trigger word, the bot will automatically respond.",
 				Inline: false,
 			},
 			{
 				Name:   "🗑️ `/reply [trigger] [response] remove`",
-				Value:  "Remove an existing auto-reply rule for the specified trigger.",
+				Value:  "Remove an existing auto-reply rule for the specified trigger in this server.",
 				Inline: false,
 			},
 			{
 				Name:   "📋 `/list_replies`",
-				Value:  "Show all active global auto-reply rules.",
+				Value:  "Show all active auto-reply rules for this server.",
 				Inline: false,
 			},
 			{
 				Name:   "ℹ️ How it works:",
-				Value:  "• Triggers are case-insensitive\n• Bot checks if trigger text is contained in messages\n• Anyone can create new rules\n• Only the original author can modify/delete their rules\n• Rules work globally across all channels the bot can access",
+				Value:  "• Triggers are case-insensitive and match whole words only\n• Bot only works in servers where auto-replies have been set up\n• Anyone can create new rules\n• Only the original author can modify/delete their rules\n• Rules are server-specific",
 				Inline: false,
 			},
 			{
 				Name:   "⚠️ Note:",
-				Value:  "The bot needs 'Send Messages' permission in channels where you want auto-replies to work.",
+				Value:  "• Commands only work in servers, not in DMs\n• The bot needs 'Send Messages' permission in channels where you want auto-replies to work\n• Auto-replies only work in servers that have at least one rule set up",
 				Inline: false,
 			},
 		},
 		Footer: &discordgo.MessageEmbedFooter{
-			Text: "Use /reply to set up smart auto-replies! Only you can modify rules you create.",
+			Text: "Use /reply to set up smart auto-replies for this server! Only you can modify rules you create.",
 		},
 	}
 
@@ -331,7 +378,14 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	if len(autoReplies) == 0 {
+	// Only work in servers, not DMs
+	if m.GuildID == "" {
+		return
+	}
+
+	// Check if this server has any auto-replies set up
+	serverReplies := serverAutoReplies[m.GuildID]
+	if len(serverReplies) == 0 {
 		return
 	}
 
@@ -347,7 +401,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 
 	// Check for matching triggers - search for whole word matches only
-	for _, reply := range autoReplies {
+	for _, reply := range serverReplies {
 		if containsWholeWord(messageContent, reply.Trigger) {
 			// Send reply immediately with message reference to show "replying to" context
 			_, err := s.ChannelMessageSendReply(m.ChannelID, reply.Response, &discordgo.MessageReference{
