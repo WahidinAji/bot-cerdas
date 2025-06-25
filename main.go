@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -40,6 +42,25 @@ type Item struct {
 	Link        string `xml:"link"`
 	Description string `xml:"description"`
 	PubDate     string `xml:"pubDate"`
+}
+
+// Currency conversion response structure
+type CurrencyResponse struct {
+	Success bool          `json:"success"`
+	Query   CurrencyQuery `json:"query"`
+	Info    CurrencyInfo  `json:"info"`
+	Result  float64       `json:"result"`
+}
+
+type CurrencyQuery struct {
+	From   string  `json:"from"`
+	To     string  `json:"to"`
+	Amount float64 `json:"amount"`
+}
+
+type CurrencyInfo struct {
+	Timestamp int64   `json:"timestamp"`
+	Rate      float64 `json:"rate"`
 }
 
 // ServerAutoReplies stores auto-reply rules per server
@@ -111,6 +132,141 @@ func fetchRSSFeed(url string) (*RSS, error) {
 	}
 
 	return &rss, nil
+}
+
+// convertCurrency converts an amount from one currency to another using exchangerate-api.com
+func convertCurrency(amount float64, from, to string) (*CurrencyResponse, error) {
+	// Convert currency codes to uppercase for API
+	from = strings.ToUpper(from)
+	to = strings.ToUpper(to)
+
+	apiKey := os.Getenv("EXCHANGERATE_API_KEY") // Not used in this example, but can be set for paid plans
+
+	// Use exchangerate-api.com free tier (no API key required for basic usage)
+	// url := fmt.Sprintf("https://api.exchangerate-api.com/v4/latest/%s", from)
+
+	//example request Example Request: https://v6.exchangerate-api.com/v6/cb11520a7b456009f84a5da1/latest/USD
+	url := fmt.Sprintf("https://v6.exchangerate-api.com/v6/%s/latest/%s", apiKey, from)
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch exchange rates: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP error: %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %v", err)
+	}
+
+	// Parse the response
+	var response map[string]interface{}
+	err = json.Unmarshal(body, &response)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse JSON: %v", err)
+	}
+
+	// Check if the request was successful
+	result, ok := response["result"].(string)
+	if !ok || result != "success" {
+		return nil, fmt.Errorf("API request failed: %v", response)
+	}
+
+	// Get conversion rates from the response
+	conversionRates, ok := response["conversion_rates"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid response format: conversion_rates not found")
+	}
+
+	rate, ok := conversionRates[to].(float64)
+	if !ok {
+		return nil, fmt.Errorf("currency %s not found", to)
+	}
+
+	convertedAmount := amount * rate
+
+	return &CurrencyResponse{
+		Success: true,
+		Query: CurrencyQuery{
+			From:   from,
+			To:     to,
+			Amount: amount,
+		},
+		Info: CurrencyInfo{
+			Timestamp: time.Now().Unix(),
+			Rate:      rate,
+		},
+		Result: convertedAmount,
+	}, nil
+}
+
+// parseCurrencyInput parses currency conversion input like "$500 idr" or "500jpy idr"
+func parseCurrencyInput(input string) (amount float64, from, to string, err error) {
+	// Remove extra spaces and convert to lowercase
+	input = strings.TrimSpace(strings.ToLower(input))
+
+	// Split by spaces
+	parts := strings.Fields(input)
+	if len(parts) != 2 {
+		return 0, "", "", fmt.Errorf("invalid format. Use format like '$500 idr' or '500jpy idr'")
+	}
+
+	fromPart := parts[0]
+	to = parts[1]
+
+	// Handle different formats for the amount and source currency
+	var amountStr string
+
+	// Check if it starts with a currency symbol
+	if strings.HasPrefix(fromPart, "$") {
+		from = "usd"
+		amountStr = strings.TrimPrefix(fromPart, "$")
+	} else if strings.HasPrefix(fromPart, "€") || strings.HasPrefix(fromPart, "eur") {
+		from = "eur"
+		amountStr = strings.TrimPrefix(fromPart, "€")
+		amountStr = strings.TrimPrefix(amountStr, "eur")
+	} else if strings.HasPrefix(fromPart, "£") || strings.HasPrefix(fromPart, "gbp") {
+		from = "gbp"
+		amountStr = strings.TrimPrefix(fromPart, "£")
+		amountStr = strings.TrimPrefix(amountStr, "gbp")
+	} else if strings.HasPrefix(fromPart, "¥") || strings.HasPrefix(fromPart, "jpy") {
+		from = "jpy"
+		amountStr = strings.TrimPrefix(fromPart, "¥")
+		amountStr = strings.TrimPrefix(amountStr, "jpy")
+	} else {
+		// Try to extract currency code from the end
+		re := regexp.MustCompile(`^(\d+(?:\.\d+)?)(.*?)$`)
+		matches := re.FindStringSubmatch(fromPart)
+		if len(matches) != 3 {
+			return 0, "", "", fmt.Errorf("invalid amount format")
+		}
+		amountStr = matches[1]
+		currencyCode := strings.TrimSpace(matches[2])
+		if currencyCode == "" {
+			return 0, "", "", fmt.Errorf("source currency not specified")
+		}
+		from = currencyCode
+	}
+
+	// Parse the amount
+	amount, err = strconv.ParseFloat(amountStr, 64)
+	if err != nil {
+		return 0, "", "", fmt.Errorf("invalid amount: %s", amountStr)
+	}
+
+	if amount <= 0 {
+		return 0, "", "", fmt.Errorf("amount must be positive")
+	}
+
+	return amount, from, to, nil
 }
 
 // loadAutoReplies loads auto-reply rules from JSON file
@@ -457,13 +613,18 @@ func handleCommandsCommand(s *discordgo.Session, i *discordgo.InteractionCreate)
 				Inline: false,
 			},
 			{
+				Name:   "💱 **Currency Commands**",
+				Value:  "`/convert` - Convert currency amounts (e.g., `/convert $500 idr`)",
+				Inline: false,
+			},
+			{
 				Name:   "ℹ️ **Information Commands**",
 				Value:  "`/commands` - Show this list of all commands",
 				Inline: false,
 			},
 			{
 				Name:   "📖 **Quick Usage Examples:**",
-				Value:  "• `/reply kerja working hard!` - Create auto-reply\n• `/analisis ringkasan pasar` - Get market news (if authorized)\n• `/trendingx` - See top 5 trending topics with clickable links\n• `/list_replies` - See all server replies\n• `/help_reply` - Detailed auto-reply help",
+				Value:  "• `/reply kerja working hard!` - Create auto-reply\n• `/analisis ringkasan pasar` - Get market news (if authorized)\n• `/convert $500 idr` - Convert $500 to Indonesian Rupiah\n• `/convert 1000jpy usd` - Convert 1000 Japanese Yen to USD\n• `/list_replies` - See all server replies\n• `/help_reply` - Detailed auto-reply help",
 				Inline: false,
 			},
 		},
@@ -479,6 +640,86 @@ func handleCommandsCommand(s *discordgo.Session, i *discordgo.InteractionCreate)
 			Embeds: []*discordgo.MessageEmbed{embed},
 			Flags:  discordgo.MessageFlagsEphemeral,
 		},
+	})
+}
+
+// handleConvertCommand handles the /convert slash command for currency conversion
+func handleConvertCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	options := i.ApplicationCommandData().Options
+	if len(options) == 0 {
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "❌ Please provide the conversion details. Examples:\n• `/convert $500 idr`\n• `/convert 1000jpy usd`\n• `/convert 100eur gbp`",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
+
+	input := options[0].StringValue()
+
+	// Parse the input
+	amount, from, to, err := parseCurrencyInput(input)
+	if err != nil {
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: fmt.Sprintf("❌ %s\n\n**Examples:**\n• `/convert $500 idr`\n• `/convert 1000jpy usd`\n• `/convert 100eur gbp`", err.Error()),
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
+
+	// Defer the response since currency conversion might take a moment
+	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+	})
+	if err != nil {
+		log.Printf("Error deferring interaction: %v", err)
+		return
+	}
+
+	// Perform currency conversion
+	result, err := convertCurrency(amount, from, to)
+	if err != nil {
+		s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+			Content: fmt.Sprintf("❌ Failed to convert currency: %v", err),
+			Flags:   discordgo.MessageFlagsEphemeral,
+		})
+		return
+	}
+
+	// Create embed with conversion result
+	embed := &discordgo.MessageEmbed{
+		Title: "💱 Currency Conversion",
+		Color: 0x2ecc71,
+		Fields: []*discordgo.MessageEmbedField{
+			{
+				Name:   "From",
+				Value:  fmt.Sprintf("%.2f %s", result.Query.Amount, strings.ToUpper(result.Query.From)),
+				Inline: true,
+			},
+			{
+				Name:   "To",
+				Value:  fmt.Sprintf("%.2f %s", result.Result, strings.ToUpper(result.Query.To)),
+				Inline: true,
+			},
+			{
+				Name:   "Exchange Rate",
+				Value:  fmt.Sprintf("1 %s = %.4f %s", strings.ToUpper(result.Query.From), result.Info.Rate, strings.ToUpper(result.Query.To)),
+				Inline: false,
+			},
+		},
+		Footer: &discordgo.MessageEmbedFooter{
+			Text: "Exchange rates provided by exchangerate-api.com",
+		},
+		Timestamp: time.Now().Format(time.RFC3339),
+	}
+
+	s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+		Embeds: []*discordgo.MessageEmbed{embed},
 	})
 }
 
@@ -686,6 +927,8 @@ func interactionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		handleAnalisisCommand(s, i)
 	case "commands":
 		handleCommandsCommand(s, i)
+	case "convert":
+		handleConvertCommand(s, i)
 	}
 }
 
@@ -767,6 +1010,18 @@ func ready(s *discordgo.Session, event *discordgo.Ready) {
 			Name:        "commands",
 			Description: "Show all available bot commands",
 		},
+		{
+			Name:        "convert",
+			Description: "Convert currency amounts between different currencies",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "amount_and_currencies",
+					Description: "Amount and currencies to convert (e.g., '$500 idr', '1000jpy usd', '100eur gbp')",
+					Required:    true,
+				},
+			},
+		},
 	}
 
 	for _, cmd := range commands {
@@ -798,7 +1053,7 @@ func main() {
 
 	// Set up event handlers
 	session.AddHandler(ready)
-	session.AddHandler(messageCreate)
+	// session.AddHandler(messageCreate)
 	session.AddHandler(interactionCreate)
 
 	// Set intents (only use privileged intents if enabled in Discord Developer Portal)
