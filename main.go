@@ -862,7 +862,7 @@ func handleAnalisisCommand(s *discordgo.Session, i *discordgo.InteractionCreate)
 	})
 }
 
-// messageCreate handles incoming messages for auto-replies
+// messageCreate handles incoming messages for auto-replies and manual bot triggers
 func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	// Ignore bot messages
 	if m.Author.Bot {
@@ -874,40 +874,104 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	// Check if this server has any auto-replies set up
-	serverReplies := serverAutoReplies[m.GuildID]
-	if len(serverReplies) == 0 {
-		return
-	}
+	log.Printf("Received message in guild %s from %s: %s", m.GuildID, m.Author.Username, m.Content)
+	// Check for manual bot trigger when user replies to a message and mentions the bot
+	if m.ReferencedMessage != nil && len(m.Mentions) > 0 {
+		// Check if the bot is mentioned
+		for _, mention := range m.Mentions {
+			if mention.ID == s.State.User.ID {
+				// Get the ORIGINAL message content to check for specific trigger words
+				originalMessageContent := strings.ToLower(strings.TrimSpace(m.ReferencedMessage.Content))
+				log.Printf("Manual trigger detected, checking original message: %s", originalMessageContent)
+				var response string
 
-	//reply to the message_id
+				// Split original message into words to check for exact matches
+				words := strings.Fields(originalMessageContent)
+				triggerFound := false
 
-	// Note: If MESSAGE_CONTENT_INTENT is not enabled, m.Content will be empty
-	// for messages from users who are not the bot owner
-	messageContent := strings.ToLower(strings.TrimSpace(m.Content))
+				log.Printf("Original message words: %v", words)
+				for _, word := range words {
+					// Remove common punctuation from the word
+					cleanWord := strings.Trim(word, ".,!?;:\"'()[]{}*<>@")
 
-	// If content is empty due to missing intent, skip auto-reply
-	if messageContent == "" {
-		return
-	}
+					log.Printf("Checking word from original message: %s", cleanWord)
 
-	// Check for matching triggers - search for whole word matches only
-	for _, reply := range serverReplies {
-		if containsWholeWord(messageContent, reply.Trigger) {
-			// Send reply immediately with message reference to show "replying to" context
-			_, err := s.ChannelMessageSendReply(m.ChannelID, reply.Response, &discordgo.MessageReference{
-				MessageID: m.ID,
-				ChannelID: m.ChannelID,
-				GuildID:   m.GuildID,
-			})
-			if err != nil {
-				log.Printf("Error sending auto-reply: %v", err)
-				// Fallback to regular message if reply fails
-				s.ChannelMessageSend(m.ChannelID, reply.Response)
+					switch cleanWord {
+					case "ai":
+						response = "AI IS DUMB BRO!"
+						triggerFound = true
+					case "kerja":
+						response = "cerdas"
+						triggerFound = true
+					case "btc":
+						response = "SIAP, ALL IN BTC!!!!!"
+						triggerFound = true
+					case "aji":
+						response = "ganteng"
+						triggerFound = true
+					}
+
+					if triggerFound {
+						break
+					}
+				}
+
+				// Only respond if a trigger was found in the original message
+				if triggerFound {
+					// Reply to the original message with the appropriate response
+					_, err := s.ChannelMessageSendReply(m.ChannelID, response, &discordgo.MessageReference{
+						MessageID: m.ReferencedMessage.ID,
+						ChannelID: m.ChannelID,
+						GuildID:   m.GuildID,
+					})
+					if err != nil {
+						log.Printf("Error sending manual trigger reply: %v", err)
+						// Fallback to regular message if reply fails
+						s.ChannelMessageSend(m.ChannelID, response)
+					}
+				} else {
+					// No trigger found in original message, send default response
+					log.Printf("No trigger found in original message")
+					s.ChannelMessageSend(m.ChannelID, "belum ada yang pas ganteng, coba izin dulu ke kak aji ganteng!")
+				}
+				return // Exit early after handling manual trigger
 			}
-			break // Only respond to the first matching trigger
 		}
-	}
+	}	
+
+	// //below is the auto-reply logic, no need again
+	// // Check if this server has any auto-replies set up
+	// serverReplies := serverAutoReplies[m.GuildID]
+	// if len(serverReplies) == 0 {
+	// 	return
+	// }
+
+	// // Note: If MESSAGE_CONTENT_INTENT is not enabled, m.Content will be empty
+	// // for messages from users who are not the bot owner
+	// messageContent := strings.ToLower(strings.TrimSpace(m.Content))
+
+	// // If content is empty due to missing intent, skip auto-reply
+	// if messageContent == "" {
+	// 	return
+	// }
+
+	// // Check for matching triggers - search for whole word matches only
+	// for _, reply := range serverReplies {
+	// 	if containsWholeWord(messageContent, reply.Trigger) {
+	// 		// Send reply immediately with message reference to show "replying to" context
+	// 		_, err := s.ChannelMessageSendReply(m.ChannelID, reply.Response, &discordgo.MessageReference{
+	// 			MessageID: m.ID,
+	// 			ChannelID: m.ChannelID,
+	// 			GuildID:   m.GuildID,
+	// 		})
+	// 		if err != nil {
+	// 			log.Printf("Error sending auto-reply: %v", err)
+	// 			// Fallback to regular message if reply fails
+	// 			s.ChannelMessageSend(m.ChannelID, reply.Response)
+	// 		}
+	// 		break // Only respond to the first matching trigger
+	// 	}
+	// }
 }
 
 // interactionCreate handles slash command interactions
@@ -917,8 +981,8 @@ func interactionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 
 	switch i.ApplicationCommandData().Name {
-	case "reply":
-		handleReplyCommand(s, i)
+	// case "reply":
+	// 	handleReplyCommand(s, i)
 	case "list_replies":
 		handleListRepliesCommand(s, i)
 	case "help_reply":
@@ -1053,7 +1117,7 @@ func main() {
 
 	// Set up event handlers
 	session.AddHandler(ready)
-	// session.AddHandler(messageCreate)
+	session.AddHandler(messageCreate)
 	session.AddHandler(interactionCreate)
 
 	// Set intents (only use privileged intents if enabled in Discord Developer Portal)
